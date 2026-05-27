@@ -69,7 +69,7 @@
 
 // ------------------ HEATMAP ------------------
 
-const Heatmap = ({
+/*const Heatmap = ({
   data,
   labels,
 }: {
@@ -174,7 +174,7 @@ const Heatmap = ({
       </table>
     </div>
   );
-};
+};*/
 
 
   const Monitor = () => {
@@ -212,7 +212,7 @@ useEffect(() => {
 
     const [datasets, setDatasets] = useState<Dataset[]>([]);
     const [selectedDatasetId, setSelectedDatasetId] = useState<number | null>(null);
-    const [allRunEvaluations, setAllRunEvaluations] = useState<any[]>([]);
+    const [, setAllRunEvaluations] = useState<any[]>([]);
     const [evaluations, setEvaluations] = useState<any[]>([]);
     const [hovered, setHovered] = useState<any>(null);
     const [datasetStats, setDatasetStats] = useState<any>(null);
@@ -230,7 +230,7 @@ useEffect(() => {
   
 
     // Model selection
-    const [baseModel, setBaseModel] = useState<string>(DEFAULT_MODEL);
+    const [baseModel,] = useState<string>(DEFAULT_MODEL);
     const [customModel, setCustomModel] = useState<string>("");
     const [useCustomModel, setUseCustomModel] = useState(false);
 
@@ -385,19 +385,10 @@ useEffect(() => {
       fetchAll();
     }, [selectedDatasetId]);
 
-    const evaluatedRuns = (allRunEvaluations ?? []).filter((r: any) => {
-    const ev = r; // /evaluations already returns flat object
 
-    return (
-      ev.f1 !== 0 ||
-      ev.precision !== 0 ||
-      ev.recall !== 0
-    );
-  });
-
-  const evaluatedRunIds = new Set(
-    evaluatedRuns.map((r: any) => r.run_id)
-  );
+  //const evaluatedRunIds = new Set(
+  //  evaluatedRuns.map((r: any) => r.run_id)
+  //);
 
     // ------------------ SINGLE EVAL ------------------
 
