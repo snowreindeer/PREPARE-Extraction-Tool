@@ -5,13 +5,14 @@ import logging
 import os
 import re
 from collections import defaultdict
-from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from sqlmodel import Session, delete, select
 
 from app.library.sentence_segmenter import iter_sentence_spans
+from app.interfaces import Token, SentenceSpan
+from app.schemas import MultilingualClinicalConfig
 from app.models_db import Dataset, Record, SentenceSegment, SourceTerm, SourceTermLink
 
 
@@ -32,219 +33,6 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class Token:
-    text: str
-    norm: str
-    start: int
-    end: int
-
-
-@dataclass
-class SentenceSpan:
-    start: int
-    end: int
-    token_start: int
-    token_end: int
-
-
-class MultilingualClinicalConfig:
-    """Static configuration for multilingual clinical extraction."""
-
-    SUPPORTED_LANGS = {"en", "nl", "it", "sl", "de", "el"}
-
-    NER_LABELS = {
-        "en": ["measurement", "observation", "drug", "medication", "condition", "diagnosis"],
-        "nl": [
-            "measurement", "observation", "drug", "medication", "condition", "diagnosis",
-            "meting", "observatie", "geneesmiddel", "medicatie", "aandoening", "diagnose",
-        ],
-        "it": [
-            "measurement", "observation", "drug", "medication", "condition", "diagnosis",
-            "misurazione", "osservazione", "farmaco", "medicazione", "condizione", "diagnosi",
-        ],
-        "sl": [
-            "measurement", "observation", "drug", "medication", "condition", "diagnosis",
-            "meritev", "opazovanje", "zdravilo", "medikacija", "stanje", "diagnoza",
-        ],
-        "de": [
-            "measurement", "observation", "drug", "medication", "condition", "diagnosis",
-            "messung", "beobachtung", "medikament", "arzneimittel", "zustand", "diagnose",
-        ],
-        "el": [
-            "measurement", "observation", "drug", "medication", "condition", "diagnosis",
-            "μέτρηση", "παρατήρηση", "φάρμακο", "αγωγή", "κατάσταση", "διάγνωση",
-        ],
-    }
-
-    LABEL_NORMALIZATION = {
-        "measurement": "MEASUREMENT",
-        "observation": "OBSERVATION",
-        "drug": "DRUG",
-        "medication": "DRUG",
-        "condition": "CONDITION",
-        "diagnosis": "CONDITION",
-        "meting": "MEASUREMENT",
-        "observatie": "OBSERVATION",
-        "geneesmiddel": "DRUG",
-        "medicatie": "DRUG",
-        "aandoening": "CONDITION",
-        "diagnose": "CONDITION",
-        "misurazione": "MEASUREMENT",
-        "osservazione": "OBSERVATION",
-        "farmaco": "DRUG",
-        "medicazione": "DRUG",
-        "condizione": "CONDITION",
-        "diagnosi": "CONDITION",
-        "meritev": "MEASUREMENT",
-        "opazovanje": "OBSERVATION",
-        "zdravilo": "DRUG",
-        "medikacija": "DRUG",
-        "stanje": "CONDITION",
-        "diagnoza": "CONDITION",
-        "messung": "MEASUREMENT",
-        "beobachtung": "OBSERVATION",
-        "medikament": "DRUG",
-        "arzneimittel": "DRUG",
-        "zustand": "CONDITION",
-        "μέτρηση": "MEASUREMENT",
-        "παρατήρηση": "OBSERVATION",
-        "φάρμακο": "DRUG",
-        "αγωγή": "DRUG",
-        "κατάσταση": "CONDITION",
-        "διάγνωση": "CONDITION",
-    }
-
-    LANGUAGE_HINTS = {
-        "en": ["patient", "blood", "pressure", "suspected", "without", "daily", "take"],
-        "nl": ["patiënt", "bloeddruk", "verdacht", "geen", "dagelijks", "ingenomen"],
-        "it": ["paziente", "pressione", "sospett", "nessun", "giorno", "assunto"],
-        "sl": ["bolnik", "krvni", "tlak", "sum", "brez", "dnevno", "jemal"],
-        "de": ["patient", "blutdruck", "verdacht", "kein", "täglich", "eingenommen"],
-        "el": ["ασθεν", "πίεση", "ύποπ", "χωρίς", "ημέρα", "έλαβε"],
-    }
-
-    UNITS = {
-        "mmhg", "mg", "g", "kg", "ml", "μg", "mcg", "l", "iu", "bpm", "cm", "%", "°c",
-        "mg/dl", "mmol/l", "puffs",
-    }
-
-
-    NEGATION_PHRASES = {
-        "en": [
-            "no signs of", "no evidence of", "did not take", "did not use", "did not receive",
-            "was not taking", "not taking", "not taken", "without", "denies", "denied", "no", "not",
-        ],
-        "nl": [
-            "geen tekenen van", "geen bewijs voor", "niet gebruikt", "niet ingenomen",
-            "zonder", "ontkent", "geen", "niet",
-        ],
-        "it": [
-            "nessun segno di", "nessuna evidenza di", "non ha assunto", "non assume",
-            "non assunto", "senza", "nega", "nessun", "non",
-        ],
-        "sl": [
-            "brez znakov", "brez dokazov za", "ni jemal", "ni jemala", "ne jemlje",
-            "brez", "zanika", "ni", "ne",
-        ],
-        "de": [
-            "keine anzeichen für", "kein hinweis auf", "nicht eingenommen", "nimmt nicht",
-            "ohne", "verneint", "kein", "keine", "nicht",
-        ],
-        "el": [
-            "χωρίς σημεία", "χωρίς ενδείξεις", "δεν έλαβε", "δεν λαμβάνει",
-            "χωρίς", "δεν",
-        ],
-    }
-
-    STATUS_PHRASES = {
-        "en": ["suspected", "confirmed", "excluded", "known", "historical"],
-        "nl": ["verdacht", "bevestigd", "uitgesloten", "bekend", "historisch"],
-        "it": ["sospetta", "sospetto", "confermata", "confermato", "esclusa", "escluso", "nota", "noto"],
-        "sl": ["sum na", "potrjeno", "izključeno", "znano", "anamnestično"],
-        "de": ["verdacht auf", "verdacht", "bestätigt", "ausgeschlossen", "bekannt", "historisch"],
-        "el": ["ύποπτη", "ύποπτο", "επιβεβαιωμένη", "επιβεβαιωμένο", "αποκλείστηκε", "γνωστή", "γνωστό"],
-    }
-
-    FREQUENCY_PHRASES = {
-        "en": ["once daily", "twice daily", "three times daily", "daily", "weekly", "monthly", "as needed", "bid", "tid", "qid"],
-        "nl": ["eenmaal daags", "tweemaal daags", "driemaal daags", "dagelijks", "wekelijks", "maandelijks", "zo nodig"],
-        "it": ["una volta al giorno", "due volte al giorno", "tre volte al giorno", "giornalmente", "settimanalmente", "mensilmente"],
-        "sl": ["enkrat dnevno", "dvakrat dnevno", "trikrat dnevno", "dnevno", "tedensko", "mesečno", "po potrebi"],
-        "de": ["einmal täglich", "zweimal täglich", "dreimal täglich", "täglich", "wöchentlich", "monatlich", "bei bedarf"],
-        "el": ["μία φορά την ημέρα", "δύο φορές την ημέρα", "τρεις φορές την ημέρα", "καθημερινά", "εβδομαδιαία", "μηνιαία"],
-    }
-
-    ROUTE_PHRASES = {
-        "en": ["orally", "oral", "iv", "intravenous", "inhalation", "topical", "subcutaneous", "intramuscular"],
-        "nl": ["oraal", "intraveneus", "inhalatie", "topisch", "subcutaan", "intramusculair"],
-        "it": ["per via orale", "orale", "endovenosa", "inalazione", "topica", "sottocutanea", "intramuscolare"],
-        "sl": ["peroralno", "oralno", "intravensko", "inhalacijsko", "lokalno", "subkutano", "intramuskularno"],
-        "de": ["oral", "intravenös", "inhalation", "topisch", "subkutan", "intramuskulär"],
-        "el": ["από το στόμα", "ενδοφλέβια", "εισπνοή", "τοπικά", "υποδόρια", "ενδομυϊκά"],
-    }
-
-    DURATION_STARTERS = {
-        "en": {"for"},
-        "nl": {"gedurende", "voor"},
-        "it": {"per"},
-        "sl": {"za", "skozi"},
-        "de": {"für"},
-        "el": {"για"},
-    }
-
-    DURATION_UNITS = {
-        "en": {"day", "days", "week", "weeks", "month", "months", "hour", "hours"},
-        "nl": {"dag", "dagen", "week", "weken", "maand", "maanden", "uur", "uren"},
-        "it": {"giorno", "giorni", "settimana", "settimane", "mese", "mesi", "ora", "ore"},
-        "sl": {"dan", "dni", "teden", "tedne", "tednov", "mesec", "mesece", "mesecev", "uro", "ur"},
-        "de": {"tag", "tage", "tagen", "woche", "wochen", "monat", "monate", "monaten", "stunde", "stunden"},
-        "el": {"ημέρα", "ημέρες", "εβδομάδα", "εβδομάδες", "μήνα", "μήνες", "ώρα", "ώρες"},
-    }
-
-    CONDITION_TERMS = {
-        "en": {"asthma", "pneumonia", "diabetes", "hypertension", "infection", "fever", "copd", "bronchitis"},
-        "nl": {"astma", "pneumonie", "diabetes", "hypertensie", "infectie", "koorts", "bronchitis"},
-        "it": {"asma", "polmonite", "diabete", "ipertensione", "infezione", "febbre", "bronchite"},
-        "sl": {"astma", "astme", "pljučnica", "pljučnico", "diabetes", "hipertenzija", "okužba", "vročina", "bronhitis"},
-        "de": {"asthma", "pneumonie", "diabetes", "hypertonie", "infektion", "fieber", "bronchitis"},
-        "el": {"άσθμα", "άσθματος", "πνευμονία", "διαβήτης", "υπέρταση", "λοίμωξη", "πυρετός", "βρογχίτιδα"},
-    }
-
-    DRUG_TERMS = {
-        "en": {"ibuprofen", "paracetamol", "amoxicillin", "aspirin", "metformin", "azithromycin"},
-        "nl": {"ibuprofen", "paracetamol", "amoxicilline", "aspirine", "metformine", "azitromycine"},
-        "it": {"ibuprofene", "paracetamolo", "amoxicillina", "aspirina", "metformina", "azitromicina"},
-        "sl": {"ibuprofen", "ibuprofena", "paracetamol", "amoksicilin", "aspirin", "metformin", "azitromicin"},
-        "de": {"ibuprofen", "paracetamol", "amoxicillin", "aspirin", "metformin", "azithromycin"},
-        "el": {"ιβουπροφαίνη", "ιβουπροφαίνης", "παρακεταμόλη", "αμοξικιλλίνη", "ασπιρίνη", "μετφορμίνη", "αζιθρομυκίνη"},
-    }
-
-    COMMON_MEASUREMENTS = {
-        "en": ["systolic blood pressure", "blood pressure", "heart rate", "temperature", "glucose"],
-        "nl": ["systolische bloeddruk", "bloeddruk", "hartslag", "temperatuur", "glucose"],
-        "it": ["pressione arteriosa sistolica", "pressione arteriosa", "frequenza cardiaca", "temperatura", "glucosio"],
-        "sl": ["sistolični krvni tlak", "krvni tlak", "srčni utrip", "temperatura", "glukoza"],
-        "de": ["systolische blutdruck", "systolischer blutdruck", "blutdruck", "herzfrequenz", "temperatur", "glukose"],
-        "el": ["συστολική αρτηριακή πίεση", "αρτηριακή πίεση", "καρδιακή συχνότητα", "θερμοκρασία", "γλυκόζη"],
-    }
-
-    @classmethod
-    def normalize_phrase_list(cls, phrases: Sequence[str]) -> List[List[str]]:
-        return [cls.normalize_text(p).split() for p in phrases]
-
-    @staticmethod
-    def normalize_text(text: str) -> str:
-        return " ".join(text.casefold().strip().split())
-
-    @classmethod
-    def detect_language(cls, text: str) -> str:
-        lowered = text.casefold()
-        scores = {lang: sum(1 for hint in hints if hint in lowered) for lang, hints in cls.LANGUAGE_HINTS.items()}
-        best_lang = max(scores, key=scores.get)
-        return best_lang if scores[best_lang] > 0 else "en"
 
 
 class ClinicalTokenizer:
@@ -275,37 +63,33 @@ class ClinicalTokenizer:
         return tokens
 
     def split_sentences(self, text: str, tokens: List[Token]) -> List[SentenceSpan]:
+        """Use the SAME sentence boundaries as persisted SentenceSegment rows.
+
+        The shared segmenter splits at punctuation followed by whitespace,
+        never at the periods inside 37.5 or 12.05.2020. Each token retains
+        its character offsets in the original record text.
+        """
         if not tokens:
             return []
 
-        sentence_spans: List[SentenceSpan] = []
-        start_token = 0
-        sent_start = tokens[0].start
-
-        for idx, tok in enumerate(tokens):
-            if tok.text in {".", "!", "?"}:
-                sentence_spans.append(
+        result: List[SentenceSpan] = []
+        token_idx = 0
+        for start, end in iter_sentence_spans(text):
+            while token_idx < len(tokens) and tokens[token_idx].end <= start:
+                token_idx += 1
+            first_idx = token_idx
+            while token_idx < len(tokens) and tokens[token_idx].end <= end:
+                token_idx += 1
+            if token_idx > first_idx:
+                result.append(
                     SentenceSpan(
-                        start=sent_start,
-                        end=tok.end,
-                        token_start=start_token,
-                        token_end=idx + 1,
+                        start=start,
+                        end=end,
+                        token_start=first_idx,
+                        token_end=token_idx,
                     )
                 )
-                if idx + 1 < len(tokens):
-                    start_token = idx + 1
-                    sent_start = tokens[idx + 1].start
-
-        if not sentence_spans or sentence_spans[-1].token_end < len(tokens):
-            sentence_spans.append(
-                SentenceSpan(
-                    start=tokens[start_token].start,
-                    end=tokens[-1].end,
-                    token_start=start_token,
-                    token_end=len(tokens),
-                )
-            )
-        return sentence_spans
+        return result
 
 
 class EntityStore:
@@ -323,6 +107,7 @@ class EntityStore:
                 ent["label"],
                 score=ent.get("score"),
                 source=ent.get("source", "gliner"),
+                clinical_type=ent.get("clinical_type"),
             )
 
     def _new_id(self) -> str:
@@ -337,6 +122,7 @@ class EntityStore:
         label: str,
         score: Optional[float] = None,
         source: str = "lexical",
+        clinical_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         if start < 0 or end > len(self.text) or start >= end:
             raise ValueError(f"Invalid entity span: {start}:{end}")
@@ -345,6 +131,8 @@ class EntityStore:
             if ent["start"] == start and ent["end"] == end and ent["label"] == label:
                 if score is not None and ent.get("score") is None:
                     ent["score"] = score
+                if clinical_type and not ent.get("clinical_type"):
+                    ent["clinical_type"] = clinical_type
                 return ent
 
         entity: Dict[str, Any] = {
@@ -357,6 +145,10 @@ class EntityStore:
         }
         if score is not None:
             entity["score"] = score
+        if clinical_type:
+            entity["clinical_type"] = clinical_type
+        elif label in {"DATE", "VALUE", "UNIT", "DURATION", "FREQUENCY", "ROUTE", "STATUS", "NEGATION", "MEASUREMENT", "DRUG", "CONDITION", "OBSERVATION"}:
+            entity["clinical_type"] = label
         self.entities.append(entity)
         self.entities.sort(key=lambda e: (e["start"], e["end"], e["label"]))
         return entity
@@ -378,11 +170,7 @@ class TokenLexicalEnricher:
 
     @staticmethod
     def _is_number_text(text: str) -> bool:
-        value = text.replace(",", ".", 1)
-        if value.count(".") > 1:
-            return False
-        parts = value.split(".")
-        return bool(parts) and all(part.isdigit() for part in parts if part != "")
+        return re.fullmatch(r"\d+(?:[.,]\d+)?", text) is not None
 
     @staticmethod
     def _valid_day_month_year(day: str, month: str, year: str) -> bool:
@@ -390,8 +178,11 @@ class TokenLexicalEnricher:
             return False
         if not (1 <= len(day) <= 2 and 1 <= len(month) <= 2 and len(year) == 4):
             return False
-        day_i, month_i = int(day), int(month)
-        return 1 <= day_i <= 31 and 1 <= month_i <= 12
+        try:
+            datetime.date(int(year), int(month), int(day))
+        except ValueError:
+            return False
+        return True
 
     @staticmethod
     def _valid_year_month_day(year: str, month: str, day: str) -> bool:
@@ -399,8 +190,11 @@ class TokenLexicalEnricher:
             return False
         if not (len(year) == 4 and 1 <= len(month) <= 2 and 1 <= len(day) <= 2):
             return False
-        day_i, month_i = int(day), int(month)
-        return 1 <= day_i <= 31 and 1 <= month_i <= 12
+        try:
+            datetime.date(int(year), int(month), int(day))
+        except ValueError:
+            return False
+        return True
 
     def _add_dates(self, store: EntityStore, tokens: List[Token]) -> None:
         idx = 0
@@ -427,11 +221,30 @@ class TokenLexicalEnricher:
         return bool(store.find_overlapping(token.start, token.end, labels))
 
     def _add_values_and_units(self, store: EntityStore, tokens: List[Token]) -> None:
-        for tok in tokens:
+        idx = 0
+        while idx < len(tokens):
+            tok = tokens[idx]
             if self._token_is_inside_label(tok, store, {"DATE"}):
+                idx += 1
+                continue
+
+            # Tokenizer keeps punctuation separate. Recombine adjacent digit,
+            # separator, digit triples to retain the entire numeric value.
+            if (
+                idx + 2 < len(tokens)
+                and tok.text.isdigit()
+                and tokens[idx + 1].text in {".", ","}
+                and tokens[idx + 2].text.isdigit()
+                and tok.end == tokens[idx + 1].start
+                and tokens[idx + 1].end == tokens[idx + 2].start
+                and not any(self._token_is_inside_label(t, store, {"DATE"}) for t in tokens[idx:idx + 3])
+            ):
+                store.add_or_get(tok.start, tokens[idx + 2].end, "VALUE", source="lexical")
+                idx += 3
                 continue
             if self._is_number_text(tok.text):
                 store.add_or_get(tok.start, tok.end, "VALUE", source="lexical")
+            idx += 1
 
         idx = 0
         while idx < len(tokens):
@@ -648,30 +461,113 @@ class EntityContextClassifier:
         return text[start:end]
 
     @staticmethod
-    def _has_any_phrase(text: str, phrases: Sequence[str]) -> bool:
-        lowered = text.casefold()
-        return any(phrase.casefold() in lowered for phrase in phrases)
+    def _phrase_match(text: str, phrase: str) -> bool:
+        """Match a standalone Unicode word/phrase (never 'ni' inside 'bolnik')."""
+        words = phrase.casefold().split()
+        if not words:
+            return False
+        pattern = r"(?<!\w)" + r"\s+".join(map(re.escape, words)) + r"(?!\w)"
+        return re.search(pattern, text.casefold()) is not None
+
+    @classmethod
+    def _has_any_phrase(cls, text: str, phrases: Sequence[str]) -> bool:
+        return any(cls._phrase_match(text, phrase) for phrase in phrases)
+
+    @staticmethod
+    def _local_clause(text: str, entity: Dict[str, Any]) -> str:
+        """Find a nearby cue within the entity's sentence and clause.
+
+        A negation from an unrelated sentence or a clause after a comma must
+        not negate this entity. Limit scope to eight tokens before and four
+        after the entity, for a conservative rule-based fallback.
+        """
+        tokenizer = ClinicalTokenizer()
+        tokens = tokenizer.tokenize(text)
+        if not tokens:
+            return ""
+        sentences = tokenizer.split_sentences(text, tokens)
+        sentence = next(
+            (s for s in sentences if s.start <= entity["start"] and entity["end"] <= s.end),
+            None,
+        )
+        if sentence is None:
+            return ""
+        matching_indices = [
+            idx for idx in range(sentence.token_start, sentence.token_end)
+            if tokens[idx].start < entity["end"] and tokens[idx].end > entity["start"]
+        ]
+        if not matching_indices:
+            return ""
+        first, last = matching_indices[0], matching_indices[-1]
+        left, right = max(sentence.token_start, first - 8), min(sentence.token_end, last + 5)
+        contrast_words = {"but", "however", "ampak", "vendar", "maar", "aber", "ma", "αλλά"}
+        # A contrast starts a new clause; a negation after "and" also must
+        # not leak backwards into the preceding entity.
+        coordinators = {"and", "in", "und", "e", "en", "και"}
+        for idx in range(first - 1, left - 1, -1):
+            if (
+                tokens[idx].text in {",", ";", ":"}
+                or tokens[idx].norm in contrast_words
+                or "\n" in text[tokens[idx].end:tokens[idx + 1].start]
+            ):
+                left = idx + 1
+                break
+        for idx in range(last + 1, right):
+            if (
+                tokens[idx].text in {",", ";", ":"}
+                or tokens[idx].norm in contrast_words | coordinators
+                or "\n" in text[tokens[idx - 1].end:tokens[idx].start]
+            ):
+                right = idx
+                break
+        if left >= right:
+            return ""
+        return text[tokens[left].start:tokens[right - 1].end]
 
     def _rule_based_context(self, text: str, entity: Dict[str, Any], language: str) -> Dict[str, Any]:
-        context = self._window(text, entity)
+        context = self._local_clause(text, entity)
         neg_phrases = MultilingualClinicalConfig.NEGATION_PHRASES.get(language, [])
-        status_phrases = MultilingualClinicalConfig.STATUS_PHRASES.get(language, [])
 
-        # These phrases often mean that the word "not/no" does not directly negate the entity.
-        confusing_positive_phrases = [
-            "not to stop", "not stop", "did not deny", "not excluded", "cannot be excluded",
-            "niet stoppen", "niet ontkend", "non interrompere", "non esclusa", "ne preneha",
-            "nicht absetzen", "nicht ausgeschlossen",
+        # 'Not excluded' indicates uncertainty, not either a confirmed
+        # negation or an affirmed disease. These exceptions are scoped to
+        # the same clause and resolved before generic negation phrases.
+        uncertain_exceptions = [
+            "not excluded", "cannot be excluded", "not ruled out",
+            "niet uitgesloten", "non esclusa", "non escluso",
+            "ni izključeno", "ni izključena", "nicht ausgeschlossen",
+            "δεν αποκλείεται",
+        ]
+        positive_exceptions = [
+            "not to stop", "not stop", "did not deny", "niet stoppen",
+            "niet ontkend", "non interrompere", "ne preneha", "nicht absetzen",
+        ]
+        uncertain_status = [
+            "suspected", "verdacht", "verdacht auf", "sospetta", "sospetto",
+            "sum na", "ύποπτη", "ύποπτο",
+        ]
+        historical_status = ["historical", "historisch", "storico", "storica", "anamnestično"]
+        negative_status = [
+            "excluded", "uitgesloten", "esclusa", "escluso", "izključeno",
+            "ausgeschlossen", "αποκλείστηκε",
         ]
 
-        if self._has_any_phrase(context, confusing_positive_phrases):
-            return {"context_class": "AFFIRMED", "context_score": 0.70, "context_source": "rule_fallback"}
+        context_class = "AFFIRMED"
+        if self._has_any_phrase(context, uncertain_exceptions):
+            context_class = "UNCERTAIN"
+        elif self._has_any_phrase(context, positive_exceptions):
+            context_class = "AFFIRMED"
+        elif self._has_any_phrase(context, neg_phrases):
+            context_class = "NEGATED"
+        elif self._has_any_phrase(context, negative_status):
+            context_class = "NEGATED"
+        elif self._has_any_phrase(context, uncertain_status):
+            context_class = "UNCERTAIN"
+        elif self._has_any_phrase(context, historical_status):
+            context_class = "HISTORICAL"
 
-        if self._has_any_phrase(context, neg_phrases):
-            return {"context_class": "NEGATED", "context_score": 0.80, "context_source": "rule_fallback"}
-        if self._has_any_phrase(context, status_phrases):
-            return {"context_class": "UNCERTAIN", "context_score": 0.75, "context_source": "rule_fallback"}
-        return {"context_class": "AFFIRMED", "context_score": 0.60, "context_source": "rule_fallback"}
+        # These are heuristic rules, not a probabilistic model. Do not return
+        # invented confidence values (0.70/0.80/etc.).
+        return {"context_class": context_class, "context_source": "rule_fallback"}
 
     def classify(self, text: str, entity: Dict[str, Any], language: str) -> Dict[str, Any]:
         fallback = self._rule_based_context(text, entity, language)
@@ -713,6 +609,10 @@ class ClinicalRelationBuilder:
     DRUG_LABELS = {"DRUG"}
     CONDITION_LABELS = {"CONDITION"}
 
+    @staticmethod
+    def _type(entity: Dict[str, Any]) -> str:
+        return entity.get("clinical_type") or entity["label"]
+
     BLOCKED_IF_NEGATED = {
         "DRUG": {"HAS_DOSE", "HAS_UNIT", "HAS_DURATION", "HAS_FREQUENCY", "HAS_ROUTE"},
         "CONDITION": {"HAS_STATUS"},
@@ -752,7 +652,7 @@ class ClinicalRelationBuilder:
     def _can_add_attribute(self, head: Dict[str, Any], rel_type: str) -> bool:
         if head.get("context_class") != "NEGATED":
             return True
-        blocked = self.BLOCKED_IF_NEGATED.get(head["label"], set())
+        blocked = self.BLOCKED_IF_NEGATED.get(self._type(head), set())
         return rel_type not in blocked
 
     def build(self, entities: List[Dict[str, Any]], sentences: List[SentenceSpan]) -> List[Dict[str, Any]]:
@@ -760,19 +660,19 @@ class ClinicalRelationBuilder:
 
         for sentence in sentences:
             sent_entities = self._entities_in_sentence(entities, sentence)
-            dates = [e for e in sent_entities if e["label"] == "DATE"]
-            values = [e for e in sent_entities if e["label"] == "VALUE"]
-            units = [e for e in sent_entities if e["label"] == "UNIT"]
-            durations = [e for e in sent_entities if e["label"] == "DURATION"]
-            frequencies = [e for e in sent_entities if e["label"] == "FREQUENCY"]
-            routes = [e for e in sent_entities if e["label"] == "ROUTE"]
-            statuses = [e for e in sent_entities if e["label"] == "STATUS"]
-            negations = [e for e in sent_entities if e["label"] == "NEGATION"]
+            dates = [e for e in sent_entities if self._type(e) == "DATE"]
+            values = [e for e in sent_entities if self._type(e) == "VALUE"]
+            units = [e for e in sent_entities if self._type(e) == "UNIT"]
+            durations = [e for e in sent_entities if self._type(e) == "DURATION"]
+            frequencies = [e for e in sent_entities if self._type(e) == "FREQUENCY"]
+            routes = [e for e in sent_entities if self._type(e) == "ROUTE"]
+            statuses = [e for e in sent_entities if self._type(e) == "STATUS"]
+            negations = [e for e in sent_entities if self._type(e) == "NEGATION"]
 
-            measurements = [e for e in sent_entities if e["label"] in self.MEASUREMENT_LABELS]
-            observations = [e for e in sent_entities if e["label"] in self.OBSERVATION_LABELS]
-            drugs = [e for e in sent_entities if e["label"] in self.DRUG_LABELS]
-            conditions = [e for e in sent_entities if e["label"] in self.CONDITION_LABELS]
+            measurements = [e for e in sent_entities if self._type(e) in self.MEASUREMENT_LABELS]
+            observations = [e for e in sent_entities if self._type(e) in self.OBSERVATION_LABELS]
+            drugs = [e for e in sent_entities if self._type(e) in self.DRUG_LABELS]
+            conditions = [e for e in sent_entities if self._type(e) in self.CONDITION_LABELS]
 
             positive_heads = measurements + observations + drugs + conditions
             for head in positive_heads:
@@ -780,7 +680,7 @@ class ClinicalRelationBuilder:
                     neg_tail = self._find_negation_tail(head, negations)
                     if neg_tail is not None:
                         relations.append(self._relation("NEGATED", head, neg_tail, source=head.get("context_source", "context_classifier")))
-                elif head.get("context_class") == "UNCERTAIN" and head["label"] == "CONDITION":
+                elif head.get("context_class") == "UNCERTAIN" and self._type(head) == "CONDITION":
                     status_tail = self._nearest(head, statuses)
                     if status_tail is not None:
                         relations.append(self._relation("HAS_STATUS", head, status_tail, source=head.get("context_source", "context_classifier")))
@@ -862,46 +762,43 @@ class ImprovedClinicalPipeline:
         label: str,
         extra_label_map: Optional[dict[str, str]] = None,
     ) -> str:
+        """Preserve original dataset labels; never substitute an internal type.
+
+        GLiNER prompt strings are mapped back to exactly the user's spelling
+        and case if they came from the dataset configuration.
+        """
         normalized = MultilingualClinicalConfig.normalize_text(label)
+        return (extra_label_map or {}).get(normalized, label)
 
-        built_in_label = MultilingualClinicalConfig.LABEL_NORMALIZATION.get(
-            normalized
-        )
-        if built_in_label:
-            return built_in_label
-
-        if extra_label_map and normalized in extra_label_map:
-            return extra_label_map[normalized]
-
-        return label.upper()
+    @staticmethod
+    def _clinical_type(label: str) -> Optional[str]:
+        """Internal relation classification, separate from the stored label."""
+        normalized = MultilingualClinicalConfig.normalize_text(label)
+        return MultilingualClinicalConfig.LABEL_NORMALIZATION.get(normalized)
 
     def _labels_for_language(
         self,
         language: str,
         extra_labels: Optional[Sequence[str]] = None,
     ) -> List[str]:
-        labels = list(
-            MultilingualClinicalConfig.NER_LABELS.get(
-                language,
-                MultilingualClinicalConfig.NER_LABELS["en"],
+        # If the dataset defines its own labels, only ask GLiNER for those
+        # labels. This avoids introducing labels the user never configured.
+        if extra_labels:
+            labels = list(extra_labels)
+        else:
+            labels = list(
+                MultilingualClinicalConfig.NER_LABELS.get(
+                    language, MultilingualClinicalConfig.NER_LABELS["en"]
+                )
             )
-        )
-
-        seen = {
-            MultilingualClinicalConfig.normalize_text(label)
-            for label in labels
-        }
-
-        for label in extra_labels or []:
+        seen: set[str] = set()
+        unique_labels: List[str] = []
+        for label in labels:
             normalized = MultilingualClinicalConfig.normalize_text(label)
-
-            if not normalized or normalized in seen:
-                continue
-
-            labels.append(label)
-            seen.add(normalized)
-
-        return labels
+            if normalized and normalized not in seen:
+                unique_labels.append(label)
+                seen.add(normalized)
+        return unique_labels
 
     def run_ner(
         self,
@@ -940,6 +837,7 @@ class ImprovedClinicalPipeline:
                 {
                     "text": ent["text"],
                     "label": label,
+                    "clinical_type": self._clinical_type(ent["label"]),
                     "start": ent["start"],
                     "end": ent["end"],
                     "score": ent.get("score"),
@@ -970,7 +868,7 @@ class ImprovedClinicalPipeline:
         enriched_entities, tokens, sentences = self.enricher.enrich(text, ner_entities, language)
 
         for ent in enriched_entities:
-            if ent["label"] in {"DRUG", "CONDITION", "OBSERVATION", "MEASUREMENT"}:
+            if (ent.get("clinical_type") or ent["label"]) in {"DRUG", "CONDITION", "OBSERVATION", "MEASUREMENT"}:
                 context = self.context_classifier.classify(text, ent, language)
                 ent.update(context)
 
@@ -1318,28 +1216,8 @@ def get_clinical_pipeline() -> ImprovedClinicalPipeline:
     )
 
 
-def _model_field_names(model_class: type) -> set[str]:
-    """Return SQLModel/Pydantic field names without depending on its version."""
-    fields = getattr(model_class, "model_fields", None)
-    if fields is None:
-        fields = getattr(model_class, "__fields__", {})
-    return set(fields.keys())
-
-
 def _normalized_label(label: Optional[str]) -> str:
     return (label or "").strip().casefold()
-
-
-_RULE_BASED_LABELS = {
-    "date",
-    "value",
-    "unit",
-    "duration",
-    "frequency",
-    "route",
-    "status",
-    "negation",
-}
 
 
 def _label_prompt(label: str) -> str:
@@ -1409,10 +1287,6 @@ def _dataset_gliner_label_map(dataset: Dataset) -> dict[str, str]:
         if not storage_label:
             return
 
-        normalized = _normalized_label(storage_label)
-        if normalized in _RULE_BASED_LABELS:
-            return
-
         prompt = _label_prompt(storage_label)
         if not prompt:
             return
@@ -1438,11 +1312,20 @@ def _dataset_gliner_label_map(dataset: Dataset) -> dict[str, str]:
     return label_map
 
 
-def _storage_label(entity_label: str, dataset: Dataset) -> str:
-    """Keep the configured date label compatible with the existing frontend."""
+def _storage_label(
+    entity_label: str,
+    dataset: Dataset,
+    configured_labels: Optional[dict[str, str]] = None,
+) -> str:
+    """Keep the EXACT user spelling/case for configured entity labels."""
     if entity_label == "DATE" and getattr(dataset, "date_label", None):
         return dataset.date_label
-    return entity_label
+    if configured_labels is None:
+        configured_labels = {
+            _normalized_label(label): label
+            for label in _dataset_gliner_label_map(dataset).values()
+        }
+    return configured_labels.get(_normalized_label(entity_label), entity_label)
 
 
 def _get_or_create_pipeline_terms(
@@ -1471,7 +1354,16 @@ def _get_or_create_pipeline_terms(
             )
         ] = term
 
-    source_term_fields = _model_field_names(SourceTerm)
+    # The database stores dataset-defined labels, not arbitrary intermediate
+    # clinical categories such as NEGATION or UNIT unless explicitly requested.
+    configured_labels = {
+        _normalized_label(label): label
+        for label in _dataset_gliner_label_map(dataset).values()
+    }
+    date_label = getattr(dataset, "date_label", None)
+    if date_label:
+        configured_labels[_normalized_label(date_label)] = date_label
+    allowed_labels = set(configured_labels)
     entity_map: dict[str, SourceTerm] = {}
     new_terms: List[SourceTerm] = []
 
@@ -1491,7 +1383,9 @@ def _get_or_create_pipeline_terms(
         ):
             continue
 
-        label = _storage_label(str(raw_label), dataset)
+        label = _storage_label(str(raw_label), dataset, configured_labels)
+        if _normalized_label(label) not in allowed_labels:
+            continue
         key = (int(start), int(end), _normalized_label(label))
         source_term = by_exact_span.get(key)
 
@@ -1504,34 +1398,25 @@ def _get_or_create_pipeline_terms(
                 "end_position": int(end),
             }
 
-            optional_values = {
-                "source": entity.get("source"),
-                "score": entity.get("score"),
-                "context_class": entity.get("context_class"),
-                "context_score": entity.get("context_score"),
-                "context_source": entity.get("context_source"),
-            }
-            for field_name, field_value in optional_values.items():
-                if field_name in source_term_fields and field_value is not None:
-                    kwargs[field_name] = field_value
+            # Both fields are real columns of app.models_db.SourceTerm.
+            # Never write computed context metadata that this table cannot store.
+            kwargs["automatically_extracted"] = True
+            if entity.get("score") is not None:
+                kwargs["score"] = entity["score"]
 
             source_term = SourceTerm(**kwargs)
             _ensure_sentence_assignment(source_term, segments)
             new_terms.append(source_term)
             by_exact_span[key] = source_term
         else:
-            for field_name in (
-                "source",
-                "score",
-                "context_class",
-                "context_score",
-                "context_source",
-            ):
-                if field_name not in source_term_fields:
-                    continue
-                field_value = entity.get(field_name)
-                if field_value is not None:
-                    setattr(source_term, field_name, field_value)
+            # Protect the user's manually-created annotations from a pipeline
+            # that happens to predict the same text span and label.
+            is_manual = not source_term.automatically_extracted
+            if is_manual:
+                entity_map[str(pipeline_id)] = source_term
+                continue
+            if entity.get("score") is not None:
+                source_term.score = entity["score"]
             _ensure_sentence_assignment(source_term, segments)
 
         entity_map[str(pipeline_id)] = source_term
@@ -1549,62 +1434,52 @@ def _save_pipeline_relations(
     entity_map: dict[str, SourceTerm],
     relations: Sequence[Dict[str, Any]],
 ) -> None:
-    mapped_term_ids = [
-        term.id
-        for term in entity_map.values()
-        if term.id is not None
-    ]
+    """Store only relations compatible with the existing SourceTermLink table.
+
+    SourceTermLink has no relation_type/source/score or auto marker: persisting
+    arbitrary clinical relation types as generic 'has value' edges would
+    silently change their meaning in the frontend. Only configured directed
+    dataset label relations are valid here.
+    """
+    allowed_pairs = {
+        (_normalized_label(rel.get("from_label")), _normalized_label(rel.get("to_label")))
+        for rel in (getattr(dataset, "label_relations", None) or [])
+        if isinstance(rel, dict) and rel.get("from_label") and rel.get("to_label")
+    }
+    if not allowed_pairs:
+        return
+
+    mapped_term_ids = [term.id for term in entity_map.values() if term.id is not None]
     if not mapped_term_ids:
         return
 
     existing = {
         (link.from_term_id, link.to_term_id)
         for link in db.exec(
-            select(SourceTermLink).where(
-                SourceTermLink.from_term_id.in_(mapped_term_ids)
-            )
+            select(SourceTermLink).where(SourceTermLink.from_term_id.in_(mapped_term_ids))
         ).all()
     }
-
-    link_fields = _model_field_names(SourceTermLink)
     new_links: List[SourceTermLink] = []
 
     for relation in relations:
         head = entity_map.get(str(relation.get("head")))
         tail = entity_map.get(str(relation.get("tail")))
-
-        if (
-            head is None
-            or tail is None
-            or head.id is None
-            or tail.id is None
-            or head.id == tail.id
-        ):
+        if head is None or tail is None or head.id is None or tail.id is None:
             continue
-
+        if head.id == tail.id:
+            continue
+        if (_normalized_label(head.label), _normalized_label(tail.label)) not in allowed_pairs:
+            continue
         key = (head.id, tail.id)
         if key in existing:
             continue
-
-        kwargs: Dict[str, Any] = {
-            "from_term_id": head.id,
-            "to_term_id": tail.id,
-            "dataset_id": dataset.id,
-        }
-
-        # These fields are used only when they already exist in the model.
-        # Therefore older API schemas and the frontend remain compatible.
-        if "relation_type" in link_fields and relation.get("type") is not None:
-            kwargs["relation_type"] = relation.get("type")
-        elif "type" in link_fields and relation.get("type") is not None:
-            kwargs["type"] = relation.get("type")
-
-        if "relation_source" in link_fields and relation.get("source") is not None:
-            kwargs["relation_source"] = relation.get("source")
-        elif "source" in link_fields and relation.get("source") is not None:
-            kwargs["source"] = relation.get("source")
-
-        new_links.append(SourceTermLink(**kwargs))
+        new_links.append(
+            SourceTermLink(
+                from_term_id=head.id,
+                to_term_id=tail.id,
+                dataset_id=dataset.id,
+            )
+        )
         existing.add(key)
 
     if new_links:
@@ -1733,13 +1608,12 @@ def _link_configured_dataset_relations(
                 continue
 
             existing.add(key)
-            new_links.append(
-                SourceTermLink(
-                    from_term_id=head.id,
-                    to_term_id=target.id,
-                    dataset_id=dataset.id,
-                )
-            )
+            link_kwargs: Dict[str, Any] = {
+                "from_term_id": head.id,
+                "to_term_id": target.id,
+                "dataset_id": dataset.id,
+            }
+            new_links.append(SourceTermLink(**link_kwargs))
 
     if new_links:
         db.add_all(new_links)
@@ -1810,7 +1684,9 @@ def auto_link_entities_for_record(
             "The clinical extraction pipeline failed for record_id=%s",
             record.id,
         )
-        strict = os.getenv("CLINICAL_PIPELINE_STRICT", "0").strip().lower() in {
+        # The pipeline should not quietly succeed after skipping GLiNER.
+        # Set CLINICAL_PIPELINE_STRICT=0 only when a deliberate fallback is wanted.
+        strict = os.getenv("CLINICAL_PIPELINE_STRICT", "1").strip().lower() in {
             "1",
             "true",
             "yes",
@@ -1822,4 +1698,3 @@ def auto_link_entities_for_record(
     link_dates_for_record(db=db, record=record, dataset=dataset)
 
     _link_configured_dataset_relations(db=db, record=record, dataset=dataset)
-

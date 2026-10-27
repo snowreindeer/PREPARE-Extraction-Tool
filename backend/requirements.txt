@@ -1,5 +1,6 @@
 fastapi[standard]
 uvicorn[standard]
+pydantic
 pydantic-settings
 python-dotenv
 sqlmodel
@@ -8,6 +9,8 @@ psycopg2-binary==2.9.11
 elasticsearch==8.15.1
 ijson==3.2.3
 sentence_transformers
+transformers
+gliner
 pyjwt
 pwdlib[argon2]
 scikit-learn
